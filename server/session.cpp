@@ -1,22 +1,34 @@
 #include "session.hpp"
+#include "server.hpp"
 
 #include <iostream>
+#include <sstream>
 
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/algorithm/string/trim.hpp>
 
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/ini_parser.hpp>
+
 #define TRACE 1
 
-session::session(asio::ip::tcp::socket s)
-: _s(std::move(s)), _ep(_s.remote_endpoint())
+session::session(server& srv, asio::ip::tcp::socket s)
+: _server(srv), _s(std::move(s)), _ep(_s.remote_endpoint())
 {
 #ifdef TRACE
     std::cout << "incoming connection from: " << _ep << std::endl;
 #endif
-    _handlers.emplace("quit", command{[this](){ handle_quit(); }, ""});
-    _handlers.emplace("get", command{[this](){ handle_get(); }, "get <key-name>"});
-    _handlers.emplace("set", command{[this](){ handle_set(); }, "set <key-name>=<key-value>"});
+
+    auto register_handler = [this](const char* name, handler_t h, std::string usage) {
+        command cmd;
+        cmd._handler = h;
+        cmd._usage = std::move(usage);
+        _handlers.emplace(name, std::move(cmd));
+    };
+    register_handler("quit", &session::handle_quit, "");
+    register_handler("get", &session::handle_get, "get <key-name>");
+    register_handler("set", &session::handle_set, "set <key-name>=<key-value>");
 }
 
 session::~session()
@@ -34,7 +46,7 @@ void session::start()
 void session::async_read()
 {
     asio::async_read_until(_s, asio::dynamic_buffer(_msg, 1024), "\r\n",
-        [self = shared_from_this(), this] (boost::system::error_code ec, std::size_t bytes_transferred)
+        [this] (boost::system::error_code ec, std::size_t bytes_transferred)
         {
             if(ec)
             {
@@ -57,23 +69,22 @@ void session::handle_command()
     std::cout << _ep << ": " << _msg << std::endl;
 #endif
 
-    _parts.clear();
-
-    // assume, key name/value does not contain spaces
-    // in real life helper class command_parser may be implemented to parse command line
-    boost::split(_parts, _msg, boost::is_any_of(" "));
+    std::istringstream is(_msg);
     _msg.clear();
 
-    if(_parts.empty())
+    std::string cmdname;
+    is >> cmdname;
+
+    if(cmdname.empty())
     {
-        write("invalid command\n");
+        write("invalid command");
         return;
     }
 
-    auto it = _handlers.find(_parts[0]);
+    auto it = _handlers.find(cmdname);
     if(it == _handlers.end())
     {
-        write("command not found\n");
+        write("command not found");
         return;
     }
 
@@ -81,57 +92,83 @@ void session::handle_command()
 
     try
     {
-        return cmd._handler();
+        return (this->*(cmd._handler))(is);
     }
     catch(const std::exception& e)
     {
         std::ostringstream os;
-        os << "invalid '" << _parts[0] << "' command, usage: " << cmd._usage;
+        os << "invalid '" << cmdname << "' command, usage: " << cmd._usage;
         write(os.str());
     }
 }
 
-void session::handle_quit()
+void session::handle_quit(std::istream&)
 {
-    write("bye\n");
+    write("bye", [this, self = shared_from_this()]() {
+        _s.close();
+    });
 }
 
-void session::handle_get()
+void session::handle_get(std::istream& is)
 {
-    if(_parts.size() != 2)
+    std::string key;
+    is >> key;
+
+    if(key.empty())
     {
         write("invalid 'get' command, usage: get <key-name>");
         return;
     }
+
+    std::optional<data> d = _server.get(key);
+    if(!d)
+    {
+        std::ostringstream os;
+        os << "key '" << key << "' not found";
+        write(os.str());
+        return;
+    }
+
+    std::ostringstream os;
+    os << d->value << std::endl;
+    os << "reads=" << d->reads << std::endl;
+    os << "writes=" << d->writes;
+    write(os.str());
 }
 
-void session::handle_set()
+void session::handle_set(std::istream& is)
 {
+    boost::property_tree::ptree pt;
+    boost::property_tree::read_ini(is, pt);
 
-    if(_parts.size() != 2)
-        throw std::length_error("");
-
-    std::vector<std::string> data;
-    boost::split(data, _parts[1], boost::is_any_of("="));
-
-    if(data.empty())
+    if(pt.empty())
         throw std::invalid_argument("");
 
-    std::string value;
-    if(data.size() >= 2)
-        value = std::move(data[1]);
+    const auto& v = pt.front();
+    const std::string& key = v.first;
+    const std::string& value = v.second.data();
+    _server.put(key, value);
+
+    write("ok");
  }
 
-void session::write(std::string s)
+void session::write(std::string s, std::function<void()> completion)
 {
+    s += "\n";
     std::shared_ptr<const std::string> ps = std::make_shared<std::string>(std::move(s));
     asio::async_write(_s, asio::buffer(*ps),
-        [ps, self = shared_from_this(), this](boost::system::error_code ec, std::size_t bytes_transferred) {
-            if(!ec)
-                return;
+        [ps, this, completion](boost::system::error_code ec, std::size_t bytes_transferred)
+        {
+            if(ec)
+            {
 #ifdef TRACE
-            std::cerr << _ep << " write error: " << ec << std::endl;
+                std::cerr << _ep << " write error: " << ec << std::endl;
 #endif
-            _s.close();
+                _s.close();
+                return;
+            }
+
+            if(completion)
+                completion();
         });
 }
