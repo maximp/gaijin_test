@@ -26,7 +26,9 @@ session::session(server& srv, asio::ip::tcp::socket s)
         cmd._usage = std::move(usage);
         _handlers.emplace(name, std::move(cmd));
     };
-    register_handler("quit", &session::handle_quit, "");
+    register_handler("quit", &session::handle_quit, "quit");
+    register_handler("exit", &session::handle_quit, "exit");
+    register_handler("bye", &session::handle_quit, "bye");
     register_handler("get", &session::handle_get, "get <key-name>");
     register_handler("set", &session::handle_set, "set <key-name>=<key-value>");
 }
@@ -46,12 +48,12 @@ void session::start()
 void session::async_read()
 {
     asio::async_read_until(_s, asio::dynamic_buffer(_msg, 1024), "\r\n",
-        [this] (boost::system::error_code ec, std::size_t bytes_transferred)
+        [this, self = shared_from_this()] (boost::system::error_code ec, std::size_t bytes_transferred)
         {
             if(ec)
             {
 #ifdef TRACE
-                std::cerr << _ep << " read error: " << ec << std::endl;
+                std::cout << _ep << " read error: " << ec << std::endl;
 #endif
                 return;
             }
@@ -120,8 +122,8 @@ void session::handle_get(std::istream& is)
         return;
     }
 
-    std::optional<data> d = _server.get(key);
-    if(!d)
+    auto v = _server.get(key);
+    if(!v)
     {
         std::ostringstream os;
         os << "key '" << key << "' not found";
@@ -130,9 +132,9 @@ void session::handle_get(std::istream& is)
     }
 
     std::ostringstream os;
-    os << d->value << std::endl;
-    os << "reads=" << d->reads << std::endl;
-    os << "writes=" << d->writes;
+    os << v->value << std::endl;
+    os << "reads=" << v->reads << std::endl;
+    os << "writes=" << v->writes;
     write(os.str());
 }
 
@@ -144,12 +146,16 @@ void session::handle_set(std::istream& is)
     if(pt.empty())
         throw std::invalid_argument("");
 
-    const auto& v = pt.front();
-    const std::string& key = v.first;
-    const std::string& value = v.second.data();
-    _server.put(key, value);
+    const auto& kv = pt.front();
+    const std::string& key = kv.first;
+    const std::string& value = kv.second.data();
+    auto v = _server.put(key, value);
 
-    write("ok");
+    std::ostringstream os;
+    os << v.value << std::endl;
+    os << "reads=" << v.reads << std::endl;
+    os << "writes=" << v.writes;
+    write(os.str());
  }
 
 void session::write(std::string s, std::function<void()> completion)
@@ -157,12 +163,13 @@ void session::write(std::string s, std::function<void()> completion)
     s += "\n";
     std::shared_ptr<const std::string> ps = std::make_shared<std::string>(std::move(s));
     asio::async_write(_s, asio::buffer(*ps),
-        [ps, this, completion](boost::system::error_code ec, std::size_t bytes_transferred)
+        [this, self = shared_from_this(), ps, completion]
+        (boost::system::error_code ec, std::size_t bytes_transferred)
         {
             if(ec)
             {
 #ifdef TRACE
-                std::cerr << _ep << " write error: " << ec << std::endl;
+                std::cout << _ep << " write error: " << ec << std::endl;
 #endif
                 _s.close();
                 return;

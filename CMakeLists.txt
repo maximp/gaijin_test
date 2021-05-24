@@ -46,3 +46,5 @@ endfunction()
 
 build(server)
 build(client)
+
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/config.txt DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
