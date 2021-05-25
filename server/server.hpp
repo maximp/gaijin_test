@@ -10,7 +10,8 @@ public:
     server(asio::io_service& ios, unsigned short port);
     void start();
 
-    struct value_t {
+    struct value_t
+    {
         std::string value;
         int reads;
         int writes;
@@ -22,6 +23,20 @@ public:
 
     std::optional<value_t> get(const std::string& key) const;
     value_t put(const std::string& key, const std::string& value);
+
+    struct stat_t
+    {
+        int n_get = 0;
+        int n_set = 0;
+    };
+
+    struct stats_t
+    {
+        stat_t overall;
+        stat_t last;
+    };
+
+    stats_t stats(bool reset_last = true);
 
 private:
     void accept();
@@ -55,4 +70,8 @@ private:
     container_t                 _data;
     mutable std::shared_mutex   _lock;
     mutable std::atomic_bool    _modified;
+    mutable stats_t             _stats;
 };
+
+std::ostream& operator<<(std::ostream& os, server::stats_t& s);
+std::ostream& operator<<(std::ostream& os, server::stat_t& s);

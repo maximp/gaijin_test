@@ -12,23 +12,30 @@ using namespace boost;
 
 int main(int argc, char** argv)
 {
+    std::string server = "`127.0.0.1";
     unsigned short port = 12345;
     if(argc >= 2)
     {
-        try
+        server = argv[1];
+
+        if(argc >= 3)
         {
-            port = std::stoul(argv[1]);
-        }
-        catch(const std::exception&)
-        {
-            std::cerr << "Invalid server port: " << argv[1] << std::endl;
+            try
+            {
+                port = std::stoul(argv[1]);
+            }
+            catch(const std::exception&)
+            {
+                std::cerr << "Invalid server port: " << argv[1] << std::endl;
+            }
         }
     }
     else
     {
-        std::cerr << "Usage: server <port>" << std::endl;
-        std::cerr << "Using default port: " << port << std::endl;
+        std::cerr << "Usage: test-client <server> <port>" << std::endl;
     }
+
+    std::cout << "Connecting " << server << ":" << port << "..." << std::endl;
 
     asio::io_service ios;
 

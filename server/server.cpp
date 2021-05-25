@@ -51,8 +51,6 @@ void server::read(std::istream& is)
 
 void server::write(std::ostream& os) const
 {
-    if(!_modified)
-        return;
     std::shared_lock guard(_lock);
     for(const auto& kv : _data)
         os << kv.first << "=" << kv.second.value << std::endl;
@@ -62,23 +60,55 @@ void server::write(std::ostream& os) const
 std::optional<server::value_t> server::get(const std::string& key) const
 {
     std::shared_lock guard(_lock);
+
     auto it = _data.find(key);
     if(it == _data.end())
         return {};
+
     data_t& d = const_cast<data_t&>(it->second);
+
     ++d.reads;
-    return std::optional(d.as_value());
+    ++_stats.overall.n_get;
+    ++_stats.last.n_get;
+
+    return {d.as_value()};
 }
 
 server::value_t server::put(const std::string& key, const std::string& value)
 {
     std::unique_lock guard(_lock);
+
     auto p = _data.emplace(key, value);
     auto it = p.first;
     data_t& d = it->second;
     if(!p.second)
         d.value = value;
+
     ++d.writes;
+    ++_stats.overall.n_set;
+    ++_stats.last.n_set;
     _modified = true;
+
     return d.as_value();
+}
+
+server::stats_t server::stats(bool reset_last)
+{
+    std::unique_lock guard(_lock);
+    server::stats_t result = _stats;
+    if(reset_last)
+        _stats.last = stat_t();
+    return result;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+std::ostream& operator<<(std::ostream& os, server::stats_t& s)
+{
+    return os << "Overall " << s.overall << ", last " << s.last;
+}
+
+std::ostream& operator<<(std::ostream& os, server::stat_t& s)
+{
+    return os << "(get: " << s.n_get << ", set: " << s.n_set << ")";
 }

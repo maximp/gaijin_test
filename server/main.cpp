@@ -1,5 +1,5 @@
 #include "server.hpp"
-#include "wtimer.hpp"
+#include "timers.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -11,6 +11,7 @@
 
 static const std::filesystem::path CONFIG_FILE = "config.txt";
 static const int WRITE_INTERVAL = 5; // seconds
+static const int STAT_INTERVAL = 5; // seconds
 
 int main(int argc, char** argv)
 {
@@ -28,7 +29,7 @@ int main(int argc, char** argv)
     }
     else
     {
-        std::cerr << "Usage: server <port>" << std::endl;
+        std::cerr << "Usage: test-server <port>" << std::endl;
         std::cerr << "Using default port: " << port << std::endl;
     }
 
@@ -58,11 +59,15 @@ int main(int argc, char** argv)
 
     srv.start();
 
-    write_timer wt(ios, srv);
-    wt.schedule(std::chrono::seconds(WRITE_INTERVAL), CONFIG_FILE);
+    write_timer wt(ios, srv, CONFIG_FILE);
+    wt.schedule(std::chrono::seconds(WRITE_INTERVAL));
+
+    stat_timer st(ios, srv);
+    st.schedule(std::chrono::seconds(STAT_INTERVAL));
 
     boost::thread_group tg;
     for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i)
+    {
         tg.create_thread([&ios]()
         {
             while(!ios.stopped())
@@ -75,5 +80,6 @@ int main(int argc, char** argv)
                 std::cerr << "Exception: " << e.what() << std::endl;
             }
         });
+    }
     tg.join_all();
 }
